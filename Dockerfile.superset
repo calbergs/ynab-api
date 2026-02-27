@@ -1,0 +1,11 @@
+FROM apache/superset:latest
+
+# Install psycopg2 for PostgreSQL database connections
+# Switch to root to install, then back to superset user
+USER root
+
+# First ensure pip is available in the venv, then install psycopg2
+RUN /app/.venv/bin/python -m ensurepip --upgrade && \
+    /app/.venv/bin/python -m pip install --no-cache-dir psycopg2-binary
+
+USER superset

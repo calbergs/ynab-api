@@ -1,0 +1,10 @@
+version: 2
+
+sources:
+  - name: ynab
+    description: 'YNAB raw data landing zone'
+    database: ynab
+    schema: public
+    tables:
+      - name: ynab_transactions
+        description: 'All ynab transactions'

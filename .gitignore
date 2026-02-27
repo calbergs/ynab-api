@@ -1,0 +1,23 @@
+__pycache__/
+archive/
+dags/
+data/
+dbt/macros/
+scripts/
+venv39/
+CRON_SETUP.md
+docker-compose.yml
+get_transactions_quick.py
+load_old_budget.py
+secrets.py
+superset_config.py
+sync_state.json
+.DS_Store
+**/*.env
+
+# dbt
+**target/
+**dbt_packages/
+**logs/
+**.log
+**profiles.yml

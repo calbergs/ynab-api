@@ -1,0 +1,70 @@
+version: 2
+
+models:
+  - name: transactions
+    description: "Transactions table"
+    columns:
+      - name: id
+        description: "The primary key for this table"
+        tests:
+          - unique
+          - not_null
+  - name: income
+    description: "Income table"
+    columns:
+      - name: id
+        description: "The primary key for this table"
+        tests:
+          - unique
+          - not_null
+  - name: spend
+    description: "Spend table"
+    columns:
+      - name: id
+        description: "The primary key for this table"
+        tests:
+          - unique
+          - not_null
+  - name: card_usage
+    description: "Card/account usage metrics including total spend, transaction count, and last used date"
+    columns:
+      - name: account_id
+        description: "Unique identifier for the account/card"
+      - name: account_name
+        description: "Name of the account/card"
+      - name: total_lifetime_spend
+        description: "Total amount spent on this card across all time (in dollars)"
+      - name: total_lifetime_transaction_count
+        description: "Total number of transactions on this card across all time"
+      - name: last_used_date
+        description: "Date when the card was last used"
+      - name: first_used_date
+        description: "Date when the card was first used"
+      - name: days_since_last_use
+        description: "Number of days since the card was last used"
+      - name: top_payee_name
+        description: "Payee where the most money was spent on this card"
+      - name: top_payee_spend
+        description: "Total amount spent at the top payee for this card (in dollars)"
+      - name: top_payee_by_count_name
+        description: "Payee with the most transactions on this card"
+      - name: top_payee_by_count_transactions
+        description: "Number of transactions at the top payee by count for this card"
+      - name: last_transaction_payee_name
+        description: "Payee name from the most recent transaction on this card"
+      - name: last_transaction_amount
+        description: "Amount spent in the most recent transaction on this card (in dollars)"
+      - name: last_transaction_date
+        description: "Date of the most recent transaction on this card"
+      - name: current_month_spend
+        description: "Total amount spent on this card in the current month (in dollars)"
+      - name: current_month_transaction_count
+        description: "Total number of transactions on this card in the current month"
+      - name: top_category_all_time_name
+        description: "Category where the most money was spent on this card across all time"
+      - name: top_category_all_time_spend
+        description: "Total amount spent in the top category all time for this card (in dollars)"
+      - name: top_category_current_month_name
+        description: "Category where the most money was spent on this card in the current month"
+      - name: top_category_current_month_spend
+        description: "Total amount spent in the top category for the current month on this card (in dollars)"

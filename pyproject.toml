@@ -1,0 +1,68 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ynab-data-pipeline"
+version = "1.0.0"
+description = "Data pipeline for fetching YNAB transactions, storing in PostgreSQL, and providing analytics via dbt and Superset"
+readme = "README.md"
+requires-python = ">=3.7"
+license = {text = "MIT"}
+authors = [
+    {name = "YNAB User"}
+]
+keywords = ["ynab", "budget", "data-pipeline", "postgresql", "dbt", "superset"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.7",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+]
+
+dependencies = [
+    "requests>=2.25.0",
+    "psycopg2-binary>=2.9.0",
+    "apache-superset>=2.0.0",
+    "dbt-core>=1.0.0",
+    "dbt-postgres>=1.0.0",
+]
+
+[project.optional-dependencies]
+airflow = [
+    "apache-airflow>=2.0.0",
+    "apache-airflow-providers-slack>=2.0.0",
+]
+dev = [
+    "pytest>=7.0.0",
+    "black>=22.0.0",
+    "flake8>=4.0.0",
+    "mypy>=0.950",
+]
+
+[project.scripts]
+ynab-fetch = "get_transactions:main"
+
+[tool.setuptools]
+packages = []
+
+[tool.black]
+line-length = 100
+target-version = ['py37', 'py38', 'py39', 'py310', 'py311']
+include = '\.pyi?$'
+
+[tool.mypy]
+python_version = "3.9"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]

@@ -1,0 +1,42 @@
+version: 2
+
+models:
+  - name: rpt_spend
+    description: "Total spend table"
+    columns:
+      - name: year_month
+        description: "The primary key for this table"
+        tests:
+          - unique
+          - not_null
+  - name: rpt_income
+    description: "Total income table"
+    columns:
+      - name: year_month
+        description: "The primary key for this table"
+        tests:
+          - unique
+          - not_null
+  - name: rpt_savings
+    description: "Total savings table"
+    columns:
+      - name: year_month
+        description: "The primary key for this table"
+        tests:
+          - unique
+          - not_null
+  - name: rpt_weekly_spend
+    description: "Weekly spend metrics including total spend, week-over-week change, and top payee per week"
+    columns:
+      - name: first_day_of_week
+        description: "First day of the week (Monday) for grouping weekly spend"
+      - name: total_spend
+        description: "Total amount spent in the week (in dollars)"
+      - name: previous_week_spend
+        description: "Total amount spent in the previous week (in dollars)"
+      - name: pct_change
+        description: "Percentage change in spend compared to previous week"
+      - name: top_payee_name
+        description: "Payee where the most money was spent in this week"
+      - name: top_payee_spend
+        description: "Total amount spent at the top payee for this week (in dollars)"
