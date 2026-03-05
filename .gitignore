@@ -1,6 +1,5 @@
 __pycache__/
 archive/
-dags/
 data/
 dbt/macros/
 scripts/
