@@ -3,7 +3,7 @@ version: 2
 sources:
   - name: ynab
     description: 'YNAB raw data landing zone'
-    database: ynab
+    database: "{{ target.database }}"
     schema: public
     tables:
       - name: ynab_transactions
