@@ -68,7 +68,7 @@ def verify_slack_request(body: bytes, timestamp: str, signature: str) -> bool:
 def post_answer(response_url: str, text: str):
     """Post the final answer to Slack (in a background thread)."""
     try:
-        payload = {"text": text}
+        payload = {"response_type": "in_channel", "text": text}
         if len(text) > 3900:
             payload["text"] = text[:3900] + "\n… (response truncated)"
         r = requests.post(response_url, json=payload, timeout=10)
