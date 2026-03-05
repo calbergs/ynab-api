@@ -16,7 +16,7 @@ try:
     from airflow.operators.empty import EmptyOperator as DummyOperator
     from airflow.hooks.base import BaseHook
     try:
-        from airflow.providers.slack.operators.slack_webhook import SlackWebhookOperator
+        from airflow.providers.slack.hooks.slack_webhook import SlackWebhookHook
         SLACK_AVAILABLE = True
     except ImportError:
         SLACK_AVAILABLE = False
@@ -25,7 +25,7 @@ except ImportError:
     from airflow.operators.dummy_operator import DummyOperator
     from airflow.hooks.base_hook import BaseHook
     try:
-        from airflow.contrib.operators.slack_webhook_operator import SlackWebhookOperator
+        from airflow.providers.slack.hooks.slack_webhook import SlackWebhookHook
         SLACK_AVAILABLE = True
     except ImportError:
         SLACK_AVAILABLE = False
@@ -34,39 +34,34 @@ except ImportError:
 
 
 def task_fail_slack_alert(context):
-    """Send Slack alert when a task fails (optional - only if Slack connection is configured)."""
+    """Send Slack alert when a task fails.
+    Requires Airflow connection id 'slack': Conn Type = slackwebhook, Password = full webhook URL
+    (e.g. https://hooks.slack.com/services/T.../B.../xxx) or path (T.../B.../xxx). See Admin -> Connections.
+    """
     if not SLACK_AVAILABLE:
         print("Slack provider not installed. Skipping Slack alert.")
         return None
-    
+    ti = context.get("task_instance")
+    slack_msg = (
+        ":x: Task Failed\n"
+        "*Task*: {task}\n"
+        "*Dag*: {dag}\n"
+        "*Execution Time*: {exec_date}\n"
+        "*Log URL*: {log_url}"
+    ).format(
+        task=ti.task_id,
+        dag=ti.dag_id,
+        exec_date=context.get("execution_date"),
+        log_url=ti.log_url,
+    )
     try:
-        slack_webhook_token = BaseHook.get_connection("slack").password
-        slack_msg = """
-            :x: Task Failed
-            *Task*: {task}
-            *Dag*: {dag}
-            *Execution Time*: {exec_date}
-            *Log URL*: {log_url}
-            """.format(
-            task=context.get("task_instance").task_id,
-            dag=context.get("task_instance").dag_id,
-            ti=context.get("task_instance"),
-            exec_date=context.get("execution_date"),
-            log_url=context.get("task_instance").log_url,
-        )
-        failed_alert = SlackWebhookOperator(
-            task_id="slack_alert",
-            http_conn_id="slack",
-            webhook_token=slack_webhook_token,
-            message=slack_msg,
-            username="airflow",
-            dag=dag,
-        )
-        return failed_alert.execute(context=context)
+        hook = SlackWebhookHook(slack_webhook_conn_id="slack")
+        hook.send(text=slack_msg)
     except Exception as e:
-        # If Slack is not configured, just log the error and continue
-        print(f"Slack alert failed (Slack may not be configured): {str(e)}")
+        # Log so it appears in task logs; don't raise or the failure callback itself fails
+        print(f"Slack alert failed: {e}")
         return None
+    return None
 
 
 # Default arguments for the DAG
