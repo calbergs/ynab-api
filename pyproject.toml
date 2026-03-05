@@ -33,6 +33,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+slackbot = [
+    "flask>=3.0.0",
+    "anthropic>=0.18.0",
+    "requests>=2.25.0",
+]
 airflow = [
     "apache-airflow>=2.0.0",
     "apache-airflow-providers-slack>=2.0.0",

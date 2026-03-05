@@ -7,13 +7,19 @@ scripts/
 venv39/
 CRON_SETUP.md
 docker-compose.yml
-get_transactions_quick.py
-load_old_budget.py
 secrets.py
 superset_config.py
 sync_state.json
 .DS_Store
 **/*.env
+ynab_data_pipeline.egg-info/
+
+#misc files
+load_old_budget.py
+get_transactions_quick.py
+csv_to_json.py
+export_transactions_json.py
+transactions_2015_present.json
 
 # dbt
 **target/

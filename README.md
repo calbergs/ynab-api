@@ -178,6 +178,10 @@ The dbt project includes:
 - **Analytical**: Business logic models (`transactions`, `spend`, `income`, `card_usage`, etc.)
 - **Reporting**: Aggregated reports (`rpt_spend`, `rpt_weekly_spend`, `rpt_income`, `rpt_savings`)
 
+## Slack bot (optional)
+
+A Slack bot lets you ask questions about your spending (e.g. *How much did I spend on restaurants last month?*) and get answers from Claude using your Postgres data. See **[slack_bot/README.md](slack_bot/README.md)** for setup (Slack app, slash command `/ynab`, Anthropic API key, and run steps).
+
 ## Notes
 
 - CSV files are overwritten for the last 14 days + today on each run (configurable via `DAYS_BACK`)
