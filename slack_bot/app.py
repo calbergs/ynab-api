@@ -80,11 +80,11 @@ def post_answer(response_url: str, text: str):
             pass
 
 
-def post_message_to_slack(channel: str, text: str, thread_ts: str = None):
-    """Post a message to a channel (or thread) using Bot token."""
+def post_message_to_slack(channel: str, text: str, thread_ts: str = None) -> bool:
+    """Post a message to a channel (or thread) using Bot token. Returns True if sent, False otherwise."""
     if not SLACK_BOT_TOKEN:
         logger.warning("SLACK_BOT_TOKEN not set; cannot post event reply")
-        return
+        return False
     payload = {"channel": channel, "text": text}
     if thread_ts:
         payload["thread_ts"] = thread_ts
@@ -98,10 +98,14 @@ def post_message_to_slack(channel: str, text: str, thread_ts: str = None):
             timeout=10,
         )
         r.raise_for_status()
-        if not r.json().get("ok"):
+        data = r.json()
+        if not data.get("ok"):
             logger.warning("chat.postMessage not ok: %s", r.text)
+            return False
+        return True
     except Exception as e:
         logger.exception("post_message_to_slack failed: %s", e)
+        return False
 
 
 @app.route("/slack/ynab", methods=["GET", "POST"])
