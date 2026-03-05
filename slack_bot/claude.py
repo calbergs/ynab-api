@@ -12,7 +12,7 @@ from . import db
 
 
 def _system_prompt() -> str:
-    """Return a system prompt that includes the current local date."""
+    """Return a system prompt that includes the current local date and formatting rules."""
     today = datetime.now().date().isoformat()
     return (
         "You are a helpful assistant that answers questions about the user's spending and "
@@ -21,7 +21,17 @@ def _system_prompt() -> str:
         f"Today's local date is {today}. When the user asks about relative time periods like "
         "'this month', 'last month', 'last year', or 'last 30 days', interpret them using this "
         "local date and choose explicit calendar date ranges accordingly. "
-        "Use the tools to query the database when needed. Be concise and friendly."
+        "Use the tools to query the database when needed. Be concise and friendly. "
+        "When presenting tabular results (e.g. spending by category or by payee), format them as "
+        "a plain text table inside a single code block, using aligned columns, NOT markdown "
+        "pipe tables. For example:\n"
+        "```\n"
+        "Category                          Amount\n"
+        "--------------------------------  ---------\n"
+        "Dining                            $123.45\n"
+        "Groceries                         $456.78\n"
+        "```\n"
+        "Always give totals in the tables. "
     )
 
 TOOLS = [
@@ -114,6 +124,12 @@ def answer_question(question: str) -> str:
                 continue
             result = db.run_tool(block.name, **block.input)
             tool_results.append({"type": "tool_result", "tool_use_id": block.id, "content": result})
+
+        # Anthropic API requires user messages to have non-empty content.
+        # If no tools were requested, stop gracefully instead of sending an empty content list.
+        if not tool_results:
+            return "I don't have a response for that."
+
         messages.append({"role": "user", "content": tool_results})
 
     return "I hit the limit on query steps. Try a simpler question."
@@ -151,6 +167,10 @@ def answer_question_with_history(messages: List[Dict[str, Any]]) -> str:
                 continue
             result = db.run_tool(block.name, **block.input)
             tool_results.append({"type": "tool_result", "tool_use_id": block.id, "content": result})
+
+        if not tool_results:
+            return "I don't have a response for that."
+
         api_messages.append({"role": "user", "content": tool_results})
 
     return "I hit the limit on query steps. Try a simpler question."
