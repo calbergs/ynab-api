@@ -21,7 +21,7 @@ If your Airflow is running in Docker (like your Spotify setup), you'll need to m
 ```yaml
 # In your docker-compose.yml or Airflow config
 volumes:
-  - /Users/albertcheng/Documents/GitHub/ynab/dags:/opt/airflow/dags/ynab
+  - /Users/<user>/Documents/GitHub/ynab/dags:/opt/airflow/dags/ynab
 ```
 
 Or copy the DAG file to your Airflow DAGs directory:
