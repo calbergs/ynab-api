@@ -36,10 +36,10 @@ def _run_query(sql: str, params: tuple = ()):
 
 
 def spending_by_category(start_date: str, end_date: str, category_filter: Optional[str] = None):
-    """Sum of spending (outflows) by category. Amounts in dollars. Inflows excluded unless asked."""
+    """Sum by category. Outflows (spending) = positive dollars, inflows (returns) = negative dollars."""
     sql = f"""
         SELECT category_name,
-               SUM(amount) / 1000.0 AS total_dollars,
+               (-SUM(amount)) / 1000.0 AS total_dollars,
                COUNT(*) AS transaction_count
         FROM {TABLE_NAME}
         WHERE date BETWEEN %s AND %s
@@ -54,11 +54,11 @@ def spending_by_category(start_date: str, end_date: str, category_filter: Option
     return [dict(r) for r in rows]
 
 
-def spending_by_payee(start_date: str, end_date: str, payee_filter: Optional[str] = None, limit: int = 30):
-    """Sum of spending by payee. Amounts in dollars."""
+def spending_by_payee(start_date: str, end_date: str, payee_filter: Optional[str] = None, limit: int = 200):
+    """Sum by payee. Outflows (spending) = positive dollars, inflows (returns) = negative dollars."""
     sql = f"""
         SELECT payee_name,
-               SUM(amount) / 1000.0 AS total_dollars,
+               (-SUM(amount)) / 1000.0 AS total_dollars,
                COUNT(*) AS transaction_count
         FROM {TABLE_NAME}
         WHERE date BETWEEN %s AND %s
@@ -69,16 +69,16 @@ def spending_by_payee(start_date: str, end_date: str, payee_filter: Optional[str
     if payee_filter:
         sql += " AND payee_name ILIKE %s"
         params.append(f"%{payee_filter}%")
-    sql += " GROUP BY payee_name ORDER BY total_dollars ASC LIMIT %s"
+    sql += " GROUP BY payee_name ORDER BY total_dollars DESC LIMIT %s"
     params.append(limit)
     rows = _run_query(sql, tuple(params))
     return [dict(r) for r in rows]
 
 
 def total_spending(start_date: str, end_date: str):
-    """Total spending (sum of amount) in the date range. Negative = outflows, positive = inflows. In dollars."""
+    """Total in date range: outflows (spending) = positive dollars, inflows (returns) = negative dollars."""
     sql = f"""
-        SELECT SUM(amount) / 1000.0 AS total_dollars,
+        SELECT (-SUM(amount)) / 1000.0 AS total_dollars,
                COUNT(*) AS transaction_count
         FROM {TABLE_NAME}
         WHERE date BETWEEN %s AND %s
@@ -95,9 +95,9 @@ def recent_transactions(
     category: Optional[str] = None,
     payee_filter: Optional[str] = None,
 ):
-    """List recent transactions with date, payee, category, amount (dollars)."""
+    """List recent transactions. amount_dollars: positive = spending, negative = return/inflow."""
     sql = f"""
-        SELECT date, payee_name, category_name, amount / 1000.0 AS amount_dollars, memo
+        SELECT date, payee_name, category_name, (-amount) / 1000.0 AS amount_dollars, memo
         FROM {TABLE_NAME}
         WHERE date BETWEEN %s AND %s
           AND (deleted IS NULL OR deleted = false)
@@ -136,7 +136,7 @@ def run_tool(name: str, **kwargs) -> str:
                 kwargs["start_date"],
                 kwargs["end_date"],
                 kwargs.get("payee_filter"),
-                kwargs.get("limit", 30),
+                kwargs.get("limit", 200),
             )
         elif name == "total_spending":
             out = total_spending(kwargs["start_date"], kwargs["end_date"])

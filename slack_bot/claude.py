@@ -4,12 +4,15 @@ Call Claude with tools that query Postgres. Runs tool calls in a loop until Clau
 import json
 import re
 from datetime import datetime
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 import anthropic
 
 from .config import ANTHROPIC_API_KEY, ANTHROPIC_MODEL
 from . import db
+
+
+STEP_LIMIT_MESSAGE = "I hit the limit on query steps. Try a simpler question."
 
 
 def _system_prompt() -> str:
@@ -61,14 +64,14 @@ TOOLS = [
                 "start_date": {"type": "string", "description": "YYYY-MM-DD"},
                 "end_date": {"type": "string", "description": "YYYY-MM-DD"},
                 "payee_filter": {"type": "string", "description": "Optional filter on payee name."},
-                "limit": {"type": "integer", "description": "Max number of payees to return.", "default": 30},
+                "limit": {"type": "integer", "description": "Max number of payees to return.", "default": 200},
             },
             "required": ["start_date", "end_date"],
         },
     },
     {
         "name": "total_spending",
-        "description": "Get total spending (and transaction count) for a date range. Includes inflows and outflows; negative amounts are outflows.",
+        "description": "Get total spending (and transaction count) for a date range. Spending = positive dollars, returns/inflows = negative dollars.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -101,19 +104,27 @@ TOOLS = [
 ]
 
 
-def _fallback_answer_or_default(question: str) -> str:
+def _fallback_answer_or_default(
+    question: str, history: Optional[List[Dict[str, Any]]] = None
+) -> str:
     """
-    Fallback when we hit the internal tool-step limit.
-
-    For common patterns like 'when was the last time I made a transaction at X',
-    try a direct DB lookup by payee. Otherwise, return the generic error message.
+    Fallback when we hit the internal tool-step limit or short-circuit for
+    "when was my last transaction at X" (direct DB lookup via recent_transactions).
+    Payee breakdown is left to Claude + tools so formatting stays clean.
     """
     try:
         q_lower = question.lower() if isinstance(question, str) else ""
     except Exception:
         q_lower = ""
 
-    if q_lower and "last time" in q_lower and ("transaction" in q_lower or "purchase" in q_lower):
+    # Pattern 1: "when was my last transaction/purchase at X"
+    wants_last_tx = (
+        ("last transaction" in q_lower)
+        or ("last purchase" in q_lower)
+        or ("last time" in q_lower and ("transaction" in q_lower or "purchase" in q_lower))
+    )
+
+    if q_lower and wants_last_tx:
         # Heuristic: look for "at <payee>" or "from <payee>"
         try:
             m = re.search(r"\b(?:at|from)\s+(.+?)([?.!]|$)", question, flags=re.IGNORECASE)
@@ -133,14 +144,14 @@ def _fallback_answer_or_default(question: str) -> str:
                     )
                     if rows:
                         tx = rows[0]
-                        date = tx.get("date")
+                        tx_date = tx.get("date")
                         payee_name = tx.get("payee_name") or payee
                         amount = tx.get("amount_dollars")
                         try:
                             amount_str = f"${float(amount):.2f}"
                         except Exception:
                             amount_str = str(amount)
-                        return f"Your last transaction at {payee_name} was on {date} for {amount_str}."
+                        return f"Your last transaction at {payee_name} was on {tx_date} for {amount_str}."
                     else:
                         return f"I couldn't find any transactions matching '{payee}'."
                 except Exception as e:
@@ -149,10 +160,15 @@ def _fallback_answer_or_default(question: str) -> str:
                         f"Details: {e}"
                     )
 
-    return "I hit the limit on query steps. Try a simpler question."
+    return STEP_LIMIT_MESSAGE
 
 
 def answer_question(question: str) -> str:
+    # Fast path: for "when was my last transaction at X" skip the tool loop and answer from the DB.
+    direct = _fallback_answer_or_default(question, history=None)
+    if direct != STEP_LIMIT_MESSAGE:
+        return direct
+
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
     messages = [{"role": "user", "content": question}]
     # Allow more tool-calling turns before giving up, so complex
@@ -184,13 +200,17 @@ def answer_question(question: str) -> str:
             tool_results.append({"type": "tool_result", "tool_use_id": block.id, "content": result})
 
         # Anthropic API requires user messages to have non-empty content.
-        # If no tools were requested, stop gracefully instead of sending an empty content list.
+        # If no tools were requested, don't send an empty tool_results list back;
+        # instead, see if there's any text we can return, otherwise bail.
         if not tool_results:
+            for block in response.content:
+                if block.type == "text":
+                    return block.text
             return "I don't have a response for that."
 
         messages.append({"role": "user", "content": tool_results})
 
-    return _fallback_answer_or_default(question)
+    return STEP_LIMIT_MESSAGE
 
 
 def answer_question_with_history(messages: List[Dict[str, Any]]) -> str:
@@ -199,6 +219,17 @@ def answer_question_with_history(messages: List[Dict[str, Any]]) -> str:
     messages: list of {"role": "user"|"assistant", "content": str} (text only).
     Returns the next assistant reply.
     """
+    # Fast path only for "last transaction at X"; payee breakdown goes through Claude for formatting.
+    last_user = ""
+    if isinstance(messages, list):
+        for m in reversed(messages):
+            if isinstance(m, dict) and m.get("role") == "user":
+                last_user = m.get("content", "")
+                break
+    direct = _fallback_answer_or_default(last_user, history=messages)
+    if direct != STEP_LIMIT_MESSAGE:
+        return direct
+
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
     api_messages = list(messages)
     max_turns = 20
@@ -226,16 +257,13 @@ def answer_question_with_history(messages: List[Dict[str, Any]]) -> str:
             result = db.run_tool(block.name, **block.input)
             tool_results.append({"type": "tool_result", "tool_use_id": block.id, "content": result})
 
+        # As above, don't send an empty tool_results list; fall back to any text in the response.
         if not tool_results:
+            for block in response.content:
+                if block.type == "text":
+                    return block.text
             return "I don't have a response for that."
 
         api_messages.append({"role": "user", "content": tool_results})
 
-    # Fallback using the last user message if available
-    last_user = ""
-    if isinstance(messages, list):
-        for m in reversed(messages):
-            if isinstance(m, dict) and m.get("role") == "user":
-                last_user = m.get("content", "")
-                break
-    return _fallback_answer_or_default(last_user)
+    return STEP_LIMIT_MESSAGE
