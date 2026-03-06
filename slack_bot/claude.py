@@ -2,6 +2,7 @@
 Call Claude with tools that query Postgres. Runs tool calls in a loop until Claude responds with text.
 """
 import json
+import re
 from datetime import datetime
 from typing import List, Dict, Any
 
@@ -22,6 +23,9 @@ def _system_prompt() -> str:
         "'this month', 'last month', 'last year', or 'last 30 days', interpret them using this "
         "local date and choose explicit calendar date ranges accordingly. "
         "Use the tools to query the database when needed. Be concise and friendly. "
+        "Use tools efficiently and avoid looping: do not call tools more than a few times per "
+        "question, and once you have enough data to answer, respond directly instead of calling "
+        "more tools. "
         "When presenting tabular results (e.g. spending by category or by payee), format them as "
         "a plain text table inside a single code block, using aligned columns, NOT markdown "
         "pipe tables. For example:\n"
@@ -76,7 +80,7 @@ TOOLS = [
     },
     {
         "name": "recent_transactions",
-        "description": "List recent transactions with date, payee, category, amount.",
+        "description": "List recent transactions with date, payee, category, amount. Can be filtered by category or payee.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -84,6 +88,7 @@ TOOLS = [
                 "end_date": {"type": "string", "description": "YYYY-MM-DD"},
                 "limit": {"type": "integer", "description": "Max transactions to return.", "default": 20},
                 "category": {"type": "string", "description": "Optional filter by category name."},
+                "payee_filter": {"type": "string", "description": "Optional filter by payee name (partial match)."},
             },
             "required": ["start_date", "end_date"],
         },
@@ -96,10 +101,63 @@ TOOLS = [
 ]
 
 
+def _fallback_answer_or_default(question: str) -> str:
+    """
+    Fallback when we hit the internal tool-step limit.
+
+    For common patterns like 'when was the last time I made a transaction at X',
+    try a direct DB lookup by payee. Otherwise, return the generic error message.
+    """
+    try:
+        q_lower = question.lower() if isinstance(question, str) else ""
+    except Exception:
+        q_lower = ""
+
+    if q_lower and "last time" in q_lower and ("transaction" in q_lower or "purchase" in q_lower):
+        # Heuristic: look for "at <payee>" or "from <payee>"
+        try:
+            m = re.search(r"\b(?:at|from)\s+(.+?)([?.!]|$)", question, flags=re.IGNORECASE)
+        except Exception:
+            m = None
+        if m:
+            payee = (m.group(1) or "").strip(" ?!.").strip()
+            if payee:
+                try:
+                    today = datetime.now().date().isoformat()
+                    rows = db.recent_transactions(
+                        start_date="1900-01-01",
+                        end_date=today,
+                        limit=1,
+                        category=None,
+                        payee_filter=payee,
+                    )
+                    if rows:
+                        tx = rows[0]
+                        date = tx.get("date")
+                        payee_name = tx.get("payee_name") or payee
+                        amount = tx.get("amount_dollars")
+                        try:
+                            amount_str = f"${float(amount):.2f}"
+                        except Exception:
+                            amount_str = str(amount)
+                        return f"Your last transaction at {payee_name} was on {date} for {amount_str}."
+                    else:
+                        return f"I couldn't find any transactions matching '{payee}'."
+                except Exception as e:
+                    return (
+                        "I tried a direct lookup for your last transaction but hit an internal error. "
+                        f"Details: {e}"
+                    )
+
+    return "I hit the limit on query steps. Try a simpler question."
+
+
 def answer_question(question: str) -> str:
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
     messages = [{"role": "user", "content": question}]
-    max_turns = 5
+    # Allow more tool-calling turns before giving up, so complex
+    # questions or long history lookups have room to resolve.
+    max_turns = 20
 
     for _ in range(max_turns):
         response = client.messages.create(
@@ -132,7 +190,7 @@ def answer_question(question: str) -> str:
 
         messages.append({"role": "user", "content": tool_results})
 
-    return "I hit the limit on query steps. Try a simpler question."
+    return _fallback_answer_or_default(question)
 
 
 def answer_question_with_history(messages: List[Dict[str, Any]]) -> str:
@@ -143,7 +201,7 @@ def answer_question_with_history(messages: List[Dict[str, Any]]) -> str:
     """
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
     api_messages = list(messages)
-    max_turns = 5
+    max_turns = 20
 
     for _ in range(max_turns):
         response = client.messages.create(
@@ -173,4 +231,11 @@ def answer_question_with_history(messages: List[Dict[str, Any]]) -> str:
 
         api_messages.append({"role": "user", "content": tool_results})
 
-    return "I hit the limit on query steps. Try a simpler question."
+    # Fallback using the last user message if available
+    last_user = ""
+    if isinstance(messages, list):
+        for m in reversed(messages):
+            if isinstance(m, dict) and m.get("role") == "user":
+                last_user = m.get("content", "")
+                break
+    return _fallback_answer_or_default(last_user)

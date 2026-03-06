@@ -88,7 +88,13 @@ def total_spending(start_date: str, end_date: str):
     return dict(rows[0]) if rows else {"total_dollars": None, "transaction_count": 0}
 
 
-def recent_transactions(start_date: str, end_date: str, limit: int = 20, category: Optional[str] = None):
+def recent_transactions(
+    start_date: str,
+    end_date: str,
+    limit: int = 20,
+    category: Optional[str] = None,
+    payee_filter: Optional[str] = None,
+):
     """List recent transactions with date, payee, category, amount (dollars)."""
     sql = f"""
         SELECT date, payee_name, category_name, amount / 1000.0 AS amount_dollars, memo
@@ -100,6 +106,9 @@ def recent_transactions(start_date: str, end_date: str, limit: int = 20, categor
     if category:
         sql += " AND category_name ILIKE %s"
         params.append(f"%{category}%")
+    if payee_filter:
+        sql += " AND payee_name ILIKE %s"
+        params.append(f"%{payee_filter}%")
     sql += " ORDER BY date DESC, id LIMIT %s"
     params.append(limit)
     rows = _run_query(sql, tuple(params))
@@ -137,6 +146,7 @@ def run_tool(name: str, **kwargs) -> str:
                 kwargs["end_date"],
                 kwargs.get("limit", 20),
                 kwargs.get("category"),
+                kwargs.get("payee_filter"),
             )
         elif name == "date_range_available":
             out = date_range_available()
