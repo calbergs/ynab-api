@@ -17,15 +17,29 @@ from .app import post_message_to_slack
 from .config import SLACK_BOT_TOKEN
 
 
+def _as_central(dt: datetime) -> datetime:
+    """Convert a naive/UTC datetime to America/Chicago for gating."""
+    try:
+        import pendulum
+
+        central = pendulum.timezone("America/Chicago")
+        if getattr(dt, "tzinfo", None):
+            return dt.astimezone(central)
+        return pendulum.instance(dt).in_timezone(central)
+    except Exception:
+        return dt
+
+
 def should_send_now(dt: datetime) -> bool:
     """
-    Gate sending to Monday morning by default.
+    Gate sending to Monday morning in Central time.
 
     - Only send on Monday (weekday() == 0)
-    - Only send before 12:00 local time, so if the DAG also runs in the evening
+    - Only send before 12:00 *Central* time, so if the DAG also runs in the evening
       it won't send a second summary.
     """
-    return dt.weekday() == 0 and dt.hour < 12
+    ct = _as_central(dt)
+    return ct.weekday() == 0 and ct.hour < 12
 
 
 def send_weekly_summary() -> None:
@@ -35,11 +49,6 @@ def send_weekly_summary() -> None:
     Slack channel is controlled via YNAB_SLACK_CHANNEL (e.g. "#general" or a channel ID).
     Defaults to "#general" if not set.
     """
-    now = datetime.now()
-    if not should_send_now(now):
-        print("Skipping: not in weekly summary window (Monday morning).", file=sys.stderr)
-        return
-
     channel = os.environ.get("YNAB_SLACK_CHANNEL", "#general")
 
     if not SLACK_BOT_TOKEN:

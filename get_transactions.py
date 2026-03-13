@@ -2,6 +2,7 @@ import requests
 import csv
 import json
 import os
+import sys
 from datetime import datetime, timedelta, date
 import psycopg2
 from secrets import (
@@ -205,18 +206,39 @@ def full_refresh_postgres(transactions):
 # -----------------------------------------
 #  MAIN
 # -----------------------------------------
+def _is_full_refresh():
+    """True when FULL_REFRESH env is set to true (e.g. by Airflow DAG config)."""
+    return os.getenv("FULL_REFRESH", "false").lower() in ("true", "1", "yes")
+
+
 if __name__ == "__main__":
-    print("Fetching ALL transactions...")
-    transactions = fetch_all_transactions(budget_id)
-    print(f"Fetched {len(transactions)} transactions.")
+    full_refresh = _is_full_refresh()
+    print("Fetching ALL transactions from YNAB API...")
+    all_transactions = fetch_all_transactions(budget_id)
+    print(f"Fetched {len(all_transactions)} transactions.")
+
+    if full_refresh:
+        transactions_to_upsert = all_transactions
+        print("Full refresh: will upsert ALL transactions to Postgres.")
+    else:
+        today = date.today()
+        cutoff = today - timedelta(days=DAYS_BACK)
+        transactions_to_upsert = [
+            t for t in all_transactions
+            if datetime.strptime(t["date"], "%Y-%m-%d").date() >= cutoff
+        ]
+        print(f"Incremental: will upsert only last {DAYS_BACK} days ({len(transactions_to_upsert)} transactions).")
 
     print(f"Writing CSVs for last {DAYS_BACK} days (overwrite)...")
-    files = write_partitioned_csv(transactions)
+    files = write_partitioned_csv(all_transactions)
     print(f"Wrote {len(files)} CSV files.")
 
     print("Upserting transactions into Postgres...")
-    success = full_refresh_postgres(transactions)
+    success = full_refresh_postgres(transactions_to_upsert)
     if success:
-        print(f"Upserted {len(transactions)} transactions into Postgres (historical data preserved).")
+        print(f"Upserted {len(transactions_to_upsert)} transactions into Postgres.")
+        if full_refresh:
+            print("(Full refresh: run payee correction task if using Airflow.)")
     else:
         print("Postgres load failed. CSV files were written successfully.")
+        sys.exit(1)

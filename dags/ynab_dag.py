@@ -1,14 +1,22 @@
 """
 Airflow DAG for YNAB data pipeline
-Runs at 9am CT and 9pm CT daily to fetch transactions and run dbt build
+Runs at 9am CT and 9pm CT daily to fetch transactions and run dbt build.
+Schedule uses America/Chicago so DST is handled automatically.
 """
 
 import sys
 from datetime import datetime, timedelta
 
+try:
+    import pendulum
+except ImportError:
+    pendulum = None
+
 from airflow import DAG
+from airflow.models import Variable
 from airflow.operators.bash import BashOperator
 from airflow.operators.python import ShortCircuitOperator
+from airflow.providers.postgres.operators.postgres import PostgresOperator
 
 # Handle Airflow 1.x vs 2.x compatibility
 try:
@@ -78,27 +86,42 @@ args = {
 
 def should_send_weekly_summary(**context):
     """
-    Only send the weekly summary on the Monday morning run.
+    Only send the weekly summary on the Monday 9am CT run.
 
-    This DAG is scheduled at 03:00 and 15:00 UTC every day.
-    - 15:00 UTC on Monday ≈ 09:00 Monday CT (the "Monday morning" run).
-    We check the execution_date in UTC and only return True for that run.
+    DAG runs at 9am and 9pm CT. We convert the Airflow data interval end
+    (run time) to America/Chicago and return True only when it's Monday
+    and 9am (the morning run). Manual/backfill runs are treated the same
+    way—no extra gating.
     """
-    execution_date = context.get("execution_date")
-    if not execution_date:
+    dt = context.get("data_interval_end") or context.get("logical_date") or context.get("execution_date")
+    if not dt:
         return False
-    # Monday is 0; hour 15 is the 15:00 UTC run
-    return execution_date.weekday() == 0 and execution_date.hour == 15
+    if pendulum:
+        # data_interval_end is the run time in UTC; convert to Chicago to detect "Monday 9am CT" run
+        central = pendulum.timezone("America/Chicago")
+        if hasattr(dt, "in_timezone"):
+            ct = dt.in_timezone(central)
+        else:
+            ct = pendulum.instance(dt).in_timezone(central)
+        return ct.weekday() == 0 and ct.hour == 9
+    # Fallback if pendulum missing: approximate using naive datetime
+    return dt.weekday() == 0 and getattr(dt, "hour", 15) == 15
 
-# Schedule: 9am CT and 9pm CT daily
-# Note: Airflow schedules in UTC
-# 9am CT = 15:00 UTC (CST) / 14:00 UTC (CDT)
-# 9pm CT = 03:00 UTC (CST) / 02:00 UTC (CDT)
-# Using 15:00 and 03:00 UTC - adjust for DST if needed
-# Alternative: Use timezone-aware scheduling if on Airflow 2.x+
+# Schedule: 9am and 9pm America/Chicago daily (DST handled by timezone)
+try:
+    from airflow.timetables.interval import CronDataIntervalTimetable
+    _central_tz = pendulum.timezone("America/Chicago") if pendulum else None
+    _schedule = (
+        CronDataIntervalTimetable("0 9,21 * * *", timezone=_central_tz)
+        if _central_tz
+        else "0 3,15 * * *"
+    )
+except (ImportError, AttributeError):
+    _schedule = "0 3,15 * * *"  # fallback: 3am and 3pm UTC (approx 9pm and 9am CT)
+
 with DAG(
     dag_id="ynab_dag",
-    schedule_interval="0 3,15 * * *",  # 3am and 3pm UTC (9pm and 9am CT, adjust for DST)
+    schedule=_schedule,
     max_active_runs=1,
     catchup=False,
     default_args=args,
@@ -110,19 +133,104 @@ with DAG(
     # Base path for YNAB project (mounted in the container)
     # The full YNAB repo is mounted at /opt/ynab
     YNAB_BASE_PATH = "/opt/ynab"
+    # Use same Postgres port as data-platform (set Airflow Variable POSTGRES_HOST_PORT if not 5433)
+    postgres_port = Variable.get("POSTGRES_HOST_PORT", default_var="5433")
+
+    # Ensure YNAB_FULL_REFRESH exists so Jinja var.value.YNAB_FULL_REFRESH does not raise KeyError
+    try:
+        Variable.get("YNAB_FULL_REFRESH")
+    except KeyError:
+        Variable.set("YNAB_FULL_REFRESH", "false")
+
+    # full_refresh: set via (1) Trigger DAG w/ config {"full_refresh": true}, or (2) Airflow Variable
+    # YNAB_FULL_REFRESH = true (Admin → Variables). Then we upsert ALL and run payee correction.
+    # Use Variable if your UI has no "Trigger w/ config". Set back to false after the run for incremental.
+    full_refresh_tmpl = (
+        "{{ 'true' if (dag_run.conf.get('full_refresh') or "
+        "(var.value.YNAB_FULL_REFRESH | default('false')).lower() in ('true', '1', 'yes')) else 'false' }}"
+    )
 
     # Task 1: Fetch transactions from YNAB API and load into PostgreSQL
     fetch_transactions = BashOperator(
         task_id="fetch_transactions",
         bash_command=f"cd {YNAB_BASE_PATH} && python get_transactions.py",
-        # Ensure Python can find the secrets module
-        env={"PYTHONPATH": YNAB_BASE_PATH},
+        env={
+            "PYTHONPATH": YNAB_BASE_PATH,
+            "YNAB_PG_HOST": "host.docker.internal",
+            "YNAB_PG_PORT": postgres_port,
+            "POSTGRES_HOST_PORT": postgres_port,
+            "FULL_REFRESH": full_refresh_tmpl,
+        },
+    )
+
+    # Ensure ynab_transactions table exists before dbt (no-op if fetch_transactions created it)
+    ensure_ynab_table = PostgresOperator(
+        task_id="ensure_ynab_transactions_table",
+        postgres_conn_id="postgres_localhost",
+        sql="""
+        CREATE TABLE IF NOT EXISTS ynab_transactions (
+            id TEXT PRIMARY KEY,
+            date DATE,
+            amount BIGINT,
+            approved BOOLEAN,
+            cleared TEXT,
+            debt_transaction_type TEXT,
+            deleted BOOLEAN,
+            flag_color TEXT,
+            flag_name TEXT,
+            import_id TEXT,
+            import_payee_name TEXT,
+            import_payee_name_original TEXT,
+            matched_transaction_id TEXT,
+            memo TEXT,
+            payee_id TEXT,
+            payee_name TEXT,
+            category_id TEXT,
+            category_name TEXT,
+            account_id TEXT,
+            account_name TEXT,
+            subtransactions JSONB,
+            transfer_account_id TEXT,
+            transfer_transaction_id TEXT,
+            load_timestamp TIMESTAMPTZ
+        );
+        """,
+    )
+
+    # Always run payee corrections after fetch so the raw table stays corrected (not overwritten by next run).
+    correct_payee_names = BashOperator(
+        task_id="correct_payee_names",
+        bash_command=f"cd {YNAB_BASE_PATH} && PYTHONPATH={YNAB_BASE_PATH} python scripts/run_correct_payee_if_full_refresh.py",
+        env={
+            "PYTHONPATH": YNAB_BASE_PATH,
+            "YNAB_PG_HOST": "host.docker.internal",
+            "YNAB_PG_PORT": postgres_port,
+            "POSTGRES_HOST_PORT": postgres_port,
+        },
     )
 
     # Task 2: Run dbt build using the project-local profiles.yml
+    # Ensure dbt CLI is on PATH (pip installs it to ~/.local/bin in the Airflow image)
     dbt_build = BashOperator(
         task_id="dbt_build",
         bash_command=f"cd {YNAB_BASE_PATH}/dbt && dbt build --profiles-dir .",
+        env={
+            "PATH": "/home/airflow/.local/bin:/usr/local/bin:/usr/bin:/bin",
+            "YNAB_PG_HOST": "host.docker.internal",
+            "POSTGRES_HOST_PORT": postgres_port,
+        },
+    )
+
+    # Indexes for faster Superset/dashboard queries (idempotent). Only public.ynab_transactions
+    # here; staging table schema/name can vary by dbt config (run scripts/add_ynab_indexes.sql manually if needed).
+    ensure_ynab_indexes = PostgresOperator(
+        task_id="ensure_ynab_indexes",
+        postgres_conn_id="postgres_localhost",
+        sql=[
+            "CREATE INDEX IF NOT EXISTS ix_ynab_transactions_date ON public.ynab_transactions (date)",
+            "CREATE INDEX IF NOT EXISTS ix_ynab_transactions_date_category ON public.ynab_transactions (date, category_name)",
+            "CREATE INDEX IF NOT EXISTS ix_ynab_transactions_date_payee ON public.ynab_transactions (date, payee_name)",
+        ],
     )
 
     # Gate: only run weekly summary on Monday morning run
@@ -143,4 +251,4 @@ with DAG(
     end_task = DummyOperator(task_id="end")
 
     # Define task dependencies
-    start_task >> fetch_transactions >> dbt_build >> check_weekly_summary >> weekly_summary >> end_task
+    start_task >> fetch_transactions >> ensure_ynab_table >> correct_payee_names >> dbt_build >> ensure_ynab_indexes >> check_weekly_summary >> weekly_summary >> end_task

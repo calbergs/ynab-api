@@ -1,11 +1,15 @@
 FROM apache/superset:latest
 
-# Install psycopg2 for PostgreSQL database connections
-# Switch to root to install, then back to superset user
 USER root
 
-# First ensure pip is available in the venv, then install psycopg2
-RUN /app/.venv/bin/python -m ensurepip --upgrade && \
+# Install gosu (for entrypoint) and psycopg2 for PostgreSQL
+RUN apt-get update && apt-get install -y --no-install-recommends gosu && \
+    rm -rf /var/lib/apt/lists/* && \
+    /app/.venv/bin/python -m ensurepip --upgrade && \
     /app/.venv/bin/python -m pip install --no-cache-dir psycopg2-binary
 
-USER superset
+COPY docker-entrypoint.sh /docker-entrypoint.sh
+RUN chmod +x /docker-entrypoint.sh
+
+# Run as root so entrypoint can chown the volume; entrypoint then runs app as superset
+ENTRYPOINT ["/docker-entrypoint.sh"]

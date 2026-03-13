@@ -13,6 +13,7 @@ sync_state.json
 **/*.env
 .superset/
 ynab_data_pipeline.egg-info/
+dags/README.md
 
 #misc files
 load_old_budget.py
@@ -20,6 +21,7 @@ get_transactions_quick.py
 csv_to_json.py
 export_transactions_json.py
 transactions_2015_present.json
+superset.db
 
 # dbt
 **target/
@@ -27,3 +29,6 @@ transactions_2015_present.json
 **logs/
 **.log
 **profiles.yml
+dbt/models/staging/stg_ynab_transactions.sql
+# Allow committed profile that uses env vars only (no secrets)
+!dbt/profiles.yml
