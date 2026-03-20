@@ -5,6 +5,7 @@ import os
 import sys
 from datetime import datetime, timedelta, date
 import psycopg2
+from psycopg2.extras import execute_values
 from secrets import (
     YNAB_TOKEN,
     BASE_URL,
@@ -17,7 +18,25 @@ from secrets import (
 )
 
 TABLE_NAME = "ynab_transactions"
-DAYS_BACK = 14
+DAYS_BACK = 14  # default; override via env var DAYS_BACK
+
+
+def _get_days_back() -> int:
+    """
+    Allow Airflow/CLI to override the incremental window.
+    Use env var DAYS_BACK (int). Falls back to the module default (DAYS_BACK).
+    """
+    raw = os.getenv("DAYS_BACK")
+    if raw is None or str(raw).strip() == "":
+        return DAYS_BACK
+    try:
+        val = int(raw)
+        if val < 0:
+            raise ValueError("DAYS_BACK must be >= 0")
+        return val
+    except Exception as e:
+        print(f"WARNING: Invalid DAYS_BACK='{raw}' ({e}); using default {DAYS_BACK}")
+        return DAYS_BACK
 
 # -----------------------------------------
 #  FETCH ALL TRANSACTIONS
@@ -34,11 +53,12 @@ def fetch_all_transactions(budget_id):
 # -----------------------------------------
 #  WRITE CSV (ONLY T-DAYS_BACK DAYS, OVERWRITE)
 # -----------------------------------------
-def write_partitioned_csv(transactions, days_back=DAYS_BACK):
+def write_partitioned_csv(transactions, days_back=None):
     """
     Write CSV files for the last DAYS_BACK days plus today, overwriting existing files.
     Files are overwritten even if there are no transactions for that date.
     """
+    days_back = DAYS_BACK if days_back is None else int(days_back)
     today = date.today()
     cutoff = today - timedelta(days=days_back)
 
@@ -106,7 +126,7 @@ def full_refresh_postgres(transactions):
             password=pg_password,
             port=pg_port,
         )
-        conn.autocommit = True
+        conn.autocommit = False
         cur = conn.cursor()
 
         cur.execute(f"""
@@ -203,6 +223,71 @@ def full_refresh_postgres(transactions):
         print(f"ERROR: Failed to load data into Postgres: {str(e)}")
         return False
 
+
+def cleanup_missing_transactions_postgres(api_transactions: list[dict], cutoff_date: date) -> bool:
+    """
+    For full refresh only:
+    Delete rows from Postgres whose `id` is not present in the API response,
+    limited to `date >= cutoff_date`.
+
+    Uses a TEMP table of API ids (avoids huge NOT IN lists).
+    """
+    api_ids = {t.get("id") for t in api_transactions if t.get("id")}
+    if not api_ids:
+        # Safety: don't let a broken API call wipe your table.
+        print("WARNING: API returned 0 transaction ids; skipping cleanup delete step.")
+        return True
+
+    try:
+        conn = psycopg2.connect(
+            host=pg_host,
+            dbname=dbname,
+            user=pg_user,
+            password=pg_password,
+            port=pg_port,
+        )
+        conn.autocommit = True
+        cur = conn.cursor()
+
+        cur.execute(
+            """
+            CREATE TEMP TABLE tmp_api_transaction_ids (
+                id TEXT PRIMARY KEY
+            );
+            """
+        )
+
+        # Bulk insert ids in chunks to avoid parameter/packet limits.
+        api_id_list = list(api_ids)
+        chunk_size = 5000
+        for i in range(0, len(api_id_list), chunk_size):
+            chunk = api_id_list[i : i + chunk_size]
+            execute_values(
+                cur,
+                "INSERT INTO tmp_api_transaction_ids (id) VALUES %s ON CONFLICT DO NOTHING",
+                [(x,) for x in chunk],
+            )
+
+        delete_sql = f"""
+            DELETE FROM {TABLE_NAME}
+            WHERE date >= %s
+              AND id NOT IN (SELECT id FROM tmp_api_transaction_ids);
+        """
+        cur.execute(delete_sql, (cutoff_date,))
+
+        cur.close()
+        conn.commit()
+        conn.close()
+        return True
+    except psycopg2.OperationalError as e:
+        print("ERROR: Failed to connect to Postgres database for cleanup step.")
+        print(f"  Connection details: {pg_user}@{pg_host}:{pg_port}/{dbname}")
+        print(f"  Error: {str(e)}")
+        return False
+    except Exception as e:
+        print(f"ERROR: Cleanup delete step failed: {str(e)}")
+        return False
+
 # -----------------------------------------
 #  MAIN
 # -----------------------------------------
@@ -213,24 +298,32 @@ def _is_full_refresh():
 
 if __name__ == "__main__":
     full_refresh = _is_full_refresh()
+    days_back = _get_days_back()
     print("Fetching ALL transactions from YNAB API...")
     all_transactions = fetch_all_transactions(budget_id)
     print(f"Fetched {len(all_transactions)} transactions.")
 
     if full_refresh:
+        print("Full refresh cleanup: deleting transactions missing from API response...")
+        cutoff_date = date.today() - timedelta(days=days_back)
+        cleanup_ok = cleanup_missing_transactions_postgres(all_transactions, cutoff_date=cutoff_date)
+        if not cleanup_ok:
+            print("Cleanup delete step failed; aborting.")
+            sys.exit(1)
+
         transactions_to_upsert = all_transactions
         print("Full refresh: will upsert ALL transactions to Postgres.")
     else:
         today = date.today()
-        cutoff = today - timedelta(days=DAYS_BACK)
+        cutoff = today - timedelta(days=days_back)
         transactions_to_upsert = [
             t for t in all_transactions
             if datetime.strptime(t["date"], "%Y-%m-%d").date() >= cutoff
         ]
-        print(f"Incremental: will upsert only last {DAYS_BACK} days ({len(transactions_to_upsert)} transactions).")
+        print(f"Incremental: will upsert only last {days_back} days ({len(transactions_to_upsert)} transactions).")
 
-    print(f"Writing CSVs for last {DAYS_BACK} days (overwrite)...")
-    files = write_partitioned_csv(all_transactions)
+    print(f"Writing CSVs for last {days_back} days (overwrite)...")
+    files = write_partitioned_csv(all_transactions, days_back=days_back)
     print(f"Wrote {len(files)} CSV files.")
 
     print("Upserting transactions into Postgres...")
