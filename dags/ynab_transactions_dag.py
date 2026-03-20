@@ -3,54 +3,38 @@ from datetime import datetime, timedelta
 from airflow import DAG
 from airflow.operators.bash import BashOperator
 
-# Slack failure alert (same pattern as spotify_dag / ynab_dag)
 try:
-    from airflow.hooks.base import BaseHook
-    from airflow.providers.slack.operators.slack_webhook import SlackWebhookOperator
+    from airflow.providers.slack.hooks.slack_webhook import SlackWebhookHook
+
     SLACK_AVAILABLE = True
 except ImportError:
-    try:
-        from airflow.hooks.base_hook import BaseHook
-        from airflow.contrib.operators.slack_webhook_operator import SlackWebhookOperator
-        SLACK_AVAILABLE = True
-    except ImportError:
-        SLACK_AVAILABLE = False
+    SLACK_AVAILABLE = False
 
 
 def task_fail_slack_alert(context):
-    """Send Slack alert when a task fails (uses Airflow connection 'slack')."""
+    """Send Slack alert when a task fails (requires Airflow connection id `slack`)."""
     if not SLACK_AVAILABLE:
         return None
+    ti = context.get("task_instance")
+    exec_date = context.get("logical_date") or context.get("execution_date")
+    slack_msg = (
+        ":x: Task Failed\n"
+        "*Task*: {task}\n"
+        "*Dag*: {dag}\n"
+        "*Execution Time*: {exec_date}\n"
+        "*Log URL*: {log_url}"
+    ).format(
+        task=ti.task_id,
+        dag=ti.dag_id,
+        exec_date=exec_date,
+        log_url=ti.log_url,
+    )
     try:
-        slack_webhook_token = BaseHook.get_connection("slack").password
-        ti = context.get("task_instance")
-        slack_msg = """
-        :x: Task Failed
-        *Task*: {task}
-        *Dag*: {dag}
-        *Execution Time*: {exec_date}
-        *Log URL*: {log_url}
-        """.format(
-            task=ti.task_id,
-            dag=ti.dag_id,
-            ti=ti,
-            exec_date=context.get("execution_date"),
-            log_url=ti.log_url,
-        )
-        dag = ti.dag
-        failed_alert = SlackWebhookOperator(
-            task_id="slack_alert",
-            http_conn_id="slack",
-            webhook_token=slack_webhook_token,
-            message=slack_msg,
-            username="airflow",
-            dag=dag,
-        )
-        return failed_alert.execute(context=context)
+        hook = SlackWebhookHook(slack_webhook_conn_id="slack")
+        hook.send(text=slack_msg)
     except Exception as e:
         print(f"Slack alert failed: {e}")
-        return None
-
+    return None
 
 default_args = {
     "owner": "airflow",
@@ -65,12 +49,40 @@ default_args = {
 with DAG(
     dag_id="ynab_transactions_full_refresh",
     default_args=default_args,
-    schedule_interval="0 3 * * *",  # daily at 03:00
+    # Defining params makes the UI reliably show "Trigger DAG w/ config".
+    params={
+        "days_back": 14,
+        "full_refresh": False,
+    },
     catchup=False,
     max_active_runs=1,
 ) as dag:
     run_ynab_pipeline = BashOperator(
         task_id="run_ynab_transactions_pipeline",
         bash_command="python /opt/ynab/get_transactions.py",
+        env={
+            # Optional parameters passed when you trigger the DAG manually:
+            #   {"days_back": 30, "full_refresh": true}
+            "DAYS_BACK": "{{ (dag_run.conf or {}).get('days_back', 14) }}",
+            "FULL_REFRESH": "{{ (dag_run.conf or {}).get('full_refresh', false) | lower }}",
+            # Ensure the script uses the same Postgres port your Airflow/data-platform uses.
+            # Your data-platform exposes Postgres on host port 5433, and the script runs inside the Airflow container.
+            "YNAB_PG_HOST": "host.docker.internal",
+            "YNAB_PG_PORT": "5433",
+            "POSTGRES_HOST_PORT": "5433",
+        },
     )
+
+    # Build all dbt models and run tests (same pattern as ynab_dag).
+    dbt_build = BashOperator(
+        task_id="dbt_build",
+        bash_command="cd /opt/ynab/dbt && dbt build --profiles-dir .",
+        env={
+            "PATH": "/home/airflow/.local/bin:/usr/local/bin:/usr/bin:/bin",
+            "YNAB_PG_HOST": "host.docker.internal",
+            "POSTGRES_HOST_PORT": "5433",
+        },
+    )
+
+    run_ynab_pipeline >> dbt_build
 

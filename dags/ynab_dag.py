@@ -23,33 +23,28 @@ try:
     # Airflow 2.x
     from airflow.operators.empty import EmptyOperator as DummyOperator
     from airflow.hooks.base import BaseHook
-    try:
-        from airflow.providers.slack.hooks.slack_webhook import SlackWebhookHook
-        SLACK_AVAILABLE = True
-    except ImportError:
-        SLACK_AVAILABLE = False
 except ImportError:
     # Airflow 1.x
     from airflow.operators.dummy_operator import DummyOperator
     from airflow.hooks.base_hook import BaseHook
-    try:
-        from airflow.providers.slack.hooks.slack_webhook import SlackWebhookHook
-        SLACK_AVAILABLE = True
-    except ImportError:
-        SLACK_AVAILABLE = False
 
 # from airflow_dbt.operators.dbt_operator import DbtRunOperator  # Uncomment if using airflow-dbt
 
+# Failure alerts to Slack (optional)
+try:
+    from airflow.providers.slack.hooks.slack_webhook import SlackWebhookHook
+
+    SLACK_AVAILABLE = True
+except ImportError:
+    SLACK_AVAILABLE = False
+
 
 def task_fail_slack_alert(context):
-    """Send Slack alert when a task fails.
-    Requires Airflow connection id 'slack': Conn Type = slackwebhook, Password = full webhook URL
-    (e.g. https://hooks.slack.com/services/T.../B.../xxx) or path (T.../B.../xxx). See Admin -> Connections.
-    """
+    """Send Slack alert when a task fails (requires Airflow connection id `slack`)."""
     if not SLACK_AVAILABLE:
-        print("Slack provider not installed. Skipping Slack alert.")
         return None
     ti = context.get("task_instance")
+    exec_date = context.get("logical_date") or context.get("execution_date")
     slack_msg = (
         ":x: Task Failed\n"
         "*Task*: {task}\n"
@@ -59,16 +54,14 @@ def task_fail_slack_alert(context):
     ).format(
         task=ti.task_id,
         dag=ti.dag_id,
-        exec_date=context.get("execution_date"),
+        exec_date=exec_date,
         log_url=ti.log_url,
     )
     try:
         hook = SlackWebhookHook(slack_webhook_conn_id="slack")
         hook.send(text=slack_msg)
     except Exception as e:
-        # Log so it appears in task logs; don't raise or the failure callback itself fails
         print(f"Slack alert failed: {e}")
-        return None
     return None
 
 
