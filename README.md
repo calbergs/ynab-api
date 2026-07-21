@@ -203,9 +203,19 @@ The dbt project includes:
 - **Analytical**: Business logic models (`transactions`, `spend`, `income`, `card_usage`, etc.)
 - **Reporting**: Aggregated reports (`rpt_spend`, `rpt_weekly_spend`, `rpt_income`, `rpt_savings`)
 
-## Slack bot (optional)
+## Slack Bot (optional)
 
-A Slack bot lets you ask questions about your spending (e.g. *How much did I spend on restaurants last month?*) and get answers from Claude using your Postgres data. See **[slack_bot/README.md](slack_bot/README.md)** for setup (Slack app, slash command `/ynab`, Anthropic API key, and run steps).
+There's an on-demand `/ynab` Slack slash command that lets you ask Claude questions about your spending in plain English — it queries your Postgres transaction data via Claude tool-calling and answers directly in Slack:
+
+```
+/ynab How much did I spend on restaurants last month?
+/ynab Spending by category this year
+/ynab When was my last transaction at Costco?
+```
+
+You'll see an immediate "Thinking…" reply, then the real answer once Claude and the DB respond. You can also DM the bot or @mention it in a channel for multi-turn follow-up questions (e.g. ask a question, then "what about last year?") — it keeps the last 20 messages of context per conversation.
+
+Full setup (Slack app, Slash Command, Anthropic API key, ngrok wiring, optional DM/@mention support) is in [`slack_bot/README.md`](slack_bot/README.md).
 
 ## Notes
 
