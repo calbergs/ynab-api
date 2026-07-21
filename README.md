@@ -1,13 +1,15 @@
 # YNAB Data Pipeline
 
-This project fetches transactions from YNAB API, stores them in PostgreSQL, and provides analytics via dbt and Superset. The pipeline can be run manually, scheduled via cron/launchd, or automated with Airflow.
+This project fetches transactions from YNAB API, stores them in PostgreSQL, and provides analytics via dbt and Superset. The pipeline can be run manually (see below) or automated with Airflow — **production runs via Airflow**, using the shared stack in the `data-platform` repo. See **[dags/README.md](dags/README.md)** for the Airflow setup (mounting this repo, connections, schedule).
+
+The manual setup below (local Postgres, `secrets.py`, `just refresh`) is useful for local development/testing, but isn't how the pipeline actually runs day to day.
 
 ## Prerequisites
 
 - Python 3.7+
-- PostgreSQL (running locally)
+- PostgreSQL — either running locally, or point at the shared `data-platform` Postgres (see `data-platform/.env` for host/port) by setting `pg_host`/`pg_port` in `secrets.py` (the standalone scripts read Postgres config from `secrets.py` only, not env vars)
 - Docker and Docker Compose (for Superset)
-- dbt-core and dbt-postgres (for data transformations)
+- dbt-core and dbt-postgres (for data transformations, if running dbt outside of Airflow)
 - `just` command runner (optional, for simplified commands)
 
 ## Setup
@@ -110,10 +112,10 @@ docker compose ps
 ```
 
 **If you see "Unexpected error / SupersetApiError: Fatal error" or "Invalid decryption key":**  
-Database connection strings are encrypted with `SECRET_KEY`. If the key changed (e.g. after a config or env change), Superset can’t decrypt them. Re-encrypt with the current key by running (from repo root, with Superset running):
+Database connection strings are encrypted with `SECRET_KEY`. If the key changed (e.g. after a config or env change), Superset can’t decrypt them. Re-encrypt with the current key by setting `SUPERSET_DB_URI` to your Postgres connection string (user/password/port match `data-platform/.env`) and running (from repo root, with Superset running):
 
 ```bash
-cd ynab-api && docker exec superset python -c "
+cd ynab-api && SUPERSET_DB_URI="postgresql+psycopg2://<user>:<password>@host.docker.internal:<port>/<database>" docker exec -e SUPERSET_DB_URI superset python -c "
 import os, sys
 sys.path.insert(0, '/app')
 os.environ.setdefault('SUPERSET_CONFIG_PATH', '/app/superset_config.py')
@@ -123,14 +125,12 @@ app = create_app()
 with app.app_context():
     from superset.extensions import db
     from superset.models.core import Database
-    uri = os.environ.get('SUPERSET_DB_URI', 'postgresql+psycopg2://airflow:airflow@host.docker.internal:5433/airflow')
+    uri = os.environ['SUPERSET_DB_URI']
     r = db.session.execute(update(Database).values(sqlalchemy_uri=uri))
     db.session.commit()
     print('Re-encrypted', r.rowcount, 'database connection(s).')
 "
 ```
-
-Use a different URI by setting `SUPERSET_DB_URI` when running the command if needed.
 
 ### Running dbt
 
@@ -177,6 +177,8 @@ All sensitive configuration is stored in `secrets.py`:
 
 - YNAB API token and budget ID
 - PostgreSQL connection details (host, port, user, password, database name)
+
+`dbt/profiles.yml` is committed (env-var only, no secrets). Any personal payee-name corrections (e.g. restaurant names, or merchant strings that include your own name) go in the gitignored `dbt/macros/correct_payee_name.sql` instead — see [dags/README.md](dags/README.md#4-dbt-profiles--personal-payee-corrections) for the pattern.
 
 ## Data Pipeline Details
 

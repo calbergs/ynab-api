@@ -14,57 +14,50 @@ This DAG runs the YNAB data pipeline twice daily (9am CT and 9pm CT).
 
 ## Setup Instructions
 
-### 1. Copy DAG to Airflow
+### 1. Mount this repo into the shared Airflow stack
 
-If your Airflow is running in Docker (like your Spotify setup), you'll need to mount this directory:
+This DAG runs inside the `data-platform` repo's Airflow stack (not a standalone Airflow install). `ynab_dag.py` already assumes fixed in-container paths via `YNAB_BASE_PATH = "/opt/ynab"` — no line-editing needed. Just set these in `data-platform/.env`:
 
-```yaml
-# In your docker-compose.yml or Airflow config
-volumes:
-  - /Users/<user>/Documents/GitHub/ynab/dags:/opt/airflow/dags/ynab
+```
+YNAB_DAGS_PATH=/absolute/path/to/ynab-api/dags
+YNAB_REPO_PATH=/absolute/path/to/ynab-api
 ```
 
-Or copy the DAG file to your Airflow DAGs directory:
-```bash
-cp dags/ynab_dag.py /path/to/airflow/dags/
-```
+`data-platform/docker-compose.yaml` mounts them as `${YNAB_DAGS_PATH}:/opt/airflow/dags/ynab` and `${YNAB_REPO_PATH}:/opt/ynab` — the second one is what `YNAB_BASE_PATH` in the DAG points at, so `get_transactions.py`, `dbt/`, and `slack_bot/` are all reachable at `/opt/ynab/...` automatically. Restart `airflow-worker`/`airflow-scheduler` after changing these.
 
-### 2. Update Paths
-
-Update the paths in `ynab_dag.py` to match your Airflow setup:
-
-- **Line 74**: Update the path to `get_transactions.py`
-- **Line 80**: Update the path to your `dbt` directory
-
-Current paths assume:
-- `/opt/airflow/dags/ynab/get_transactions.py`
-- `/opt/airflow/dags/ynab/dbt/`
-
-### 3. Configure Connections
+### 2. Configure Connections
 
 Make sure you have these Airflow connections configured in **Admin → Connections**:
 
 - **PostgreSQL**: Connection ID `postgres_localhost`
   - Host: `host.docker.internal` (or your host when running Airflow in Docker)
-  - Port: **5433** (must match `POSTGRES_HOST_PORT` in data-platform `.env` if Postgres is on 5433)
-  - Schema: `airflow`
-  - Login: `airflow` / Password: `airflow`
+  - Port, schema, login, password: match whatever's set in `data-platform/.env` (`POSTGRES_HOST_PORT` and the Postgres service's credentials)
 - **Slack (failure alerts)**: Connection ID `slack`
   - Conn Type: **Slack Webhook** (or **HTTP** if that’s the only option)
   - For Slack Webhook: put your incoming webhook URL in **Password** (or in Host, depending on provider)
   - Webhook URL looks like: `https://hooks.slack.com/services/T.../B.../xxx`
   - Without this connection, task failures will not send Slack alerts
 
-### 4. Install Dependencies
+### 3. Install Dependencies
 
 Ensure these are installed in your Airflow environment:
 - `requests`
 - `psycopg2-binary`
 - `dbt-core` (and your dbt adapter, e.g., `dbt-postgres`)
 
-### 5. Configure dbt Profiles
+### 4. dbt Profiles & Personal Payee Corrections
 
-Make sure your `dbt/profiles.yml` is configured correctly for Airflow to use.
+`dbt/profiles.yml` is already committed and env-var only (no secrets) — nothing to configure there.
+
+If you want personal payee-name corrections (e.g. normalizing a specific card's merchant strings, which may contain your name or other identifying text), add them to `dbt/macros/correct_payee_name.sql` — this file is gitignored (like the rest of `dbt/macros/`) so personal data never gets committed. `stg_ynab_transactions.sql` calls `{{ correct_payee_name('payee_name_ascii') }}`; without the macro file present, `dbt build` will fail with a missing-macro error on a fresh clone. Minimum viable version (no-op passthrough):
+
+```sql
+{% macro correct_payee_name(payee_name_col) %}
+    {{ payee_name_col }}
+{% endmacro %}
+```
+
+Add `when ... then ...` cases inside a `case` expression as needed — see the (gitignored) working copy for the pattern.
 
 ## Schedule Timezone Notes
 
