@@ -1,0 +1,15 @@
+# dbt profile for YNAB project. Uses env vars so the same Postgres as Airflow
+# is used when run in Docker (set POSTGRES_HOST_PORT in data-platform/.env if port is not 5432).
+ynab:
+  target: dev
+  outputs:
+    dev:
+      type: postgres
+      host: "{{ env_var('YNAB_PG_HOST', 'host.docker.internal') }}"
+      # Quoted so YAML parses; value renders as string.
+      port: "{{ env_var('POSTGRES_HOST_PORT', '5432') | int }}"
+      user: "{{ env_var('YNAB_PG_USER', 'airflow') }}"
+      password: "{{ env_var('YNAB_PG_PASSWORD', 'airflow') }}"
+      dbname: "{{ env_var('YNAB_PG_DB', 'airflow') }}"
+      schema: public
+      threads: 4

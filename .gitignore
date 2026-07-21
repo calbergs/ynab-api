@@ -29,6 +29,5 @@ superset.db
 **logs/
 **.log
 **profiles.yml
-dbt/models/staging/stg_ynab_transactions.sql
 # Allow committed profile that uses env vars only (no secrets)
 !dbt/profiles.yml

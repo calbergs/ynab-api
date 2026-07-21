@@ -109,6 +109,29 @@ docker compose logs -f superset
 docker compose ps
 ```
 
+**If you see "Unexpected error / SupersetApiError: Fatal error" or "Invalid decryption key":**  
+Database connection strings are encrypted with `SECRET_KEY`. If the key changed (e.g. after a config or env change), Superset can’t decrypt them. Re-encrypt with the current key by running (from repo root, with Superset running):
+
+```bash
+cd ynab-api && docker exec superset python -c "
+import os, sys
+sys.path.insert(0, '/app')
+os.environ.setdefault('SUPERSET_CONFIG_PATH', '/app/superset_config.py')
+from superset.app import create_app
+from sqlalchemy import update
+app = create_app()
+with app.app_context():
+    from superset.extensions import db
+    from superset.models.core import Database
+    uri = os.environ.get('SUPERSET_DB_URI', 'postgresql+psycopg2://airflow:airflow@host.docker.internal:5433/airflow')
+    r = db.session.execute(update(Database).values(sqlalchemy_uri=uri))
+    db.session.commit()
+    print('Re-encrypted', r.rowcount, 'database connection(s).')
+"
+```
+
+Use a different URI by setting `SUPERSET_DB_URI` when running the command if needed.
+
 ### Running dbt
 
 To transform your data using dbt:
